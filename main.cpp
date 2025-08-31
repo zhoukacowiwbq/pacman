@@ -5,7 +5,7 @@
 #include <QTimer>
 #include <QDataStream>
 #include <QDebug>
-#include "ngx_c_crc32.h" // Include the CRC32 header (assume added to project)
+#include "ngx_c_crc32.h"
 
 // 定义结构（与服务器一致）
 struct STRUCT_PLAYER {
@@ -22,7 +22,8 @@ struct STRUCT_BEAN {
 struct STRUCT_STATE {
     STRUCT_PLAYER player;
     int bean_count;
-    // 后跟 bean_count 个 STRUCT_BEAN
+    int other_player_count; // 新增：其他玩家数量
+    // 后跟 bean_count 个 STRUCT_BEAN + other_player_count 个 STRUCT_PLAYER
 };
 
 struct STRUCT_MOVE {
@@ -50,7 +51,6 @@ struct COMM_PKG_HEADER {
 };
 const int PKG_HEADER_LEN = sizeof(COMM_PKG_HEADER);
 
-// 接收缓冲区（在类中定义）
 class GameClient : public QObject {
     Q_OBJECT
 public:
@@ -62,11 +62,12 @@ public:
 
         QTimer* timer = new QTimer(this);
         connect(timer, &QTimer::timeout, this, &GameClient::requestState);
-        timer->start(20000);
+        timer->start(10); // 恢复到100ms，优化多人同步
     }
 
 signals:
     void updatePlayer(int x, int y, int score);
+    void updateOtherPlayers(const QVariantList& otherPlayers); // 新增信号：其他玩家
     void updateBeans(const QVariantList& beans);
 
 public slots:
@@ -104,35 +105,28 @@ private slots:
         m_receiveBuffer.append(m_socket->readAll());
 
         while (m_receiveBuffer.size() >= PKG_HEADER_LEN) {
-            // 使用 QDataStream 解析包头（Parse Header with QDataStream），自动处理字节序（Byte Order）
             QDataStream stream(m_receiveBuffer);
-            stream.setByteOrder(QDataStream::BigEndian); // 网络序为大端序（Network Order: Big-Endian）
+            stream.setByteOrder(QDataStream::BigEndian);
             unsigned short pkgLen;
             unsigned short msgCode;
             int crc32Received;
             stream >> pkgLen >> msgCode >> crc32Received;
-            // 检查是否够完整包长度（Check if Enough for Full Packet）
             if (m_receiveBuffer.size() < pkgLen) {
-                break; // 数据不足，等待下次readyRead（Wait for Next readyRead）
+                break;
             }
-            // 提取完整包（Extract Full Packet）
             QByteArray packet = m_receiveBuffer.left(pkgLen);
-            m_receiveBuffer.remove(0, pkgLen); // 移除已处理部分（Remove Processed Part）
-            // 提取包体（Extract Body）
+            m_receiveBuffer.remove(0, pkgLen);
             QByteArray body = packet.mid(PKG_HEADER_LEN);
-            // 计算包体CRC32并校验（Calculate and Validate CRC32）
             CCRC32 *crc32Instance = CCRC32::GetInstance();
             int crc32Calculated = crc32Instance->Get_CRC(reinterpret_cast<unsigned char *>(body.data()), body.size());
             if (crc32Calculated != crc32Received) {
                 qDebug() << "CRC32 validation failed! Calculated:" << crc32Calculated << "Received:" << crc32Received;
-                continue; // 错误，丢弃包（Error, Discard Packet）
+                continue;
             }
 
-            // 处理包（Process Packet）
             if (msgCode == CMD_STATE) {
                 handleState(body);
             }
-            // 可以添加其他 msgCode 处理（Add Other msgCode Handlers）
         }
     }
 
@@ -143,29 +137,21 @@ private:
         QByteArray packet;
         QDataStream stream(&packet, QIODevice::WriteOnly);
         stream.setByteOrder(QDataStream::BigEndian);
-
-        // 计算 CRC32（Calculate CRC32）
         CCRC32 *crc32Instance = CCRC32::GetInstance();
         int crc = (bodyLen > 0) ? crc32Instance->Get_CRC(reinterpret_cast<unsigned char *>(bodyData.data()), bodyLen) : 0;
-
-        // 写入包头（Write Header）
         stream << static_cast<unsigned short>(totalLen) << msgCode << crc;
-
-        // 添加包体（Add Body）
         packet.append(bodyData);
-
-        // 发送（Send）
         m_socket->write(packet);
     }
 
     void handleState(const QByteArray& body) {
-        if (body.size() < sizeof(int)*4) return; // 最小 STRUCT_STATE 大小（Minimum STRUCT_STATE Size）
+        if (body.size() < sizeof(int)*5) return; // 更新最小大小，包含 other_player_count
 
         QDataStream bodyStream(body);
         bodyStream.setByteOrder(QDataStream::BigEndian);
 
-        int x, y, score, bean_count;
-        bodyStream >> x >> y >> score >> bean_count;
+        int x, y, score, bean_count, other_player_count;
+        bodyStream >> x >> y >> score >> bean_count >> other_player_count;
 
         QVariantList beanList;
         for (int i = 0; i < bean_count; ++i) {
@@ -174,13 +160,21 @@ private:
             beanList.append(QVariantMap{ {"x", bx}, {"y", by} });
         }
 
+        QVariantList otherPlayerList;
+        for (int i = 0; i < other_player_count; ++i) {
+            int ox, oy, os;
+            bodyStream >> ox >> oy >> os;
+            otherPlayerList.append(QVariantMap{ {"x", ox}, {"y", oy}, {"score", os} });
+        }
+
         emit updatePlayer(x, y, score);
         emit updateBeans(beanList);
+        emit updateOtherPlayers(otherPlayerList); // 新增信号触发
     }
 
     QTcpSocket* m_socket;
     QQmlApplicationEngine* m_engine;
-    QByteArray m_receiveBuffer; // 接收缓冲区（Receive Buffer）
+    QByteArray m_receiveBuffer;
 };
 
 int main(int argc, char *argv[]) {
