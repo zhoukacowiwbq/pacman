@@ -1,139 +1,173 @@
-import QtQuick 2.15
-import QtQuick.Window 2.15
+// Copyright (C) 2023 The Qt Company Ltd.
+// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR BSD-3-Clause
+pragma ComponentBehavior: Bound
+import QtQuick
+import QtQuick3D
+import QtQuick3D.Helpers
+import QtQuick.Controls
 
 Window {
+    id: mainWindow
+    width: 800
+    height: 600
     visible: true
-    width: 500
-    height: 500
-    title: "Pacman Client"
+    title: qsTr("Pacman Game")
+    color: "black"
 
-    property int playerX: 0
-    property int playerY: 0
-    property int score: 0
-    property var otherPlayers: [] // 新增：其他玩家列表
+    Component.onCompleted: {
+        requestActivate()  // 激活窗口
+        inputHandler.forceActiveFocus()  // 强制键盘输入Item获得焦点
+        console.log("Window activated")
+    }
 
-    Connections {
-        target: gameClient
-        function onUpdatePlayer(x, y, s) {
-            console.log("onUpdatePlayer: x =", x, "y =", y, "score =", s)
-            playerX = x
-            playerY = y
-            score = s
-        }
-        function onUpdateBeans(beans) {
-            console.log("onUpdateBeans: beans count =", beans.length)
-            beanModel.clear()
-            for (var i = 0; i < beans.length; i++) {
-                beanModel.append({x: beans[i].x, y: beans[i].y})
-            }
-        }
-        function onUpdateOtherPlayers(players) {
-            console.log("onUpdateOtherPlayers: count =", players.length)
-            otherPlayers = players
+    onActiveChanged: {
+        console.log("Window active:", active)
+        if (!active) {
+            requestActivate()  // 保持窗口激活
+            inputHandler.forceActiveFocus()  // 恢复键盘输入焦点
         }
     }
 
-    Rectangle {
-        id: grid
+    // 键盘输入处理
+    Item {
+        id: inputHandler
         anchors.fill: parent
-        color: "black"
+        focus: true  // 请求焦点以接收键盘事件
 
-        Repeater { model: 11; Rectangle { x: 0; y: index * 50; width: 500; height: 1; color: "gray" } }
-        Repeater { model: 11; Rectangle { x: index * 50; y: 0; width: 1; height: 500; color: "gray" } }
+        Keys.onPressed: (event) => {
+            console.log("InputHandler key:", event.key)
+            var step = 50
+            var positional = ballNode.position
+            var newX = positional.x
+            var newZ = positional.z
+            if (event.key === Qt.Key_W) {
+                newZ -= step
+            } else if (event.key === Qt.Key_S) {
+                newZ += step
+            } else if (event.key === Qt.Key_A) {
+                newX -= step
+            } else if (event.key === Qt.Key_D) {
+                newX += step
+            }
+            // 碰撞检测：限制不超出墙体
+            newX = Math.max(-1000, Math.min(1000, newX))
+            newZ = Math.max(-1000, Math.min(1000, newZ))
+            ballNode.position = Qt.vector3d(newX, positional.y, newZ)
+            console.log("Ball position:", ballNode.position)
+            event.accepted = true
+        }
 
-        ListModel { id: beanModel }
-        Repeater {
-            model: beanModel
-            Rectangle {
-                x: model.x * 50 + 22.5
-                y: model.y * 50 + 22.5
-                width: 5; height: 5
-                color: "yellow"
+        Component.onCompleted: {
+            forceActiveFocus()  // 启动时确保焦点
+            console.log("InputHandler focus:", activeFocus)
+        }
+    }
+
+    // 禁用物理输入（保留原代码）
+    Item {
+        id: inputItem
+        visible: false
+        anchors.fill: parent
+        Keys.onPressed: (event) => { }
+        property real speed: 1000000000
+    }
+
+    View3D {
+        id: view3D
+        anchors.fill: parent
+        environment: SceneEnvironment {
+            antialiasingMode: SceneEnvironment.MSAA
+            antialiasingQuality: SceneEnvironment.High
+        }
+
+        // 主光源
+        PointLight {
+            position: Qt.vector3d(400, 1200, 0)
+            color: "#FFFFFF"
+            ambientColor: "#202020"
+            brightness: 200
+            castsShadow: true
+            shadowFactor: 50
+            shadowMapQuality: Light.ShadowMapQualityHigh
+        }
+
+        // 相机
+        Node {
+            id: originNode
+            PerspectiveCamera {
+                id: viewCamera
+                position: Qt.vector3d(0, 1700, 1400)
+                eulerRotation.x: -50
+            }
+        }
+        camera: viewCamera
+
+        // OrbitCameraController
+        OrbitCameraController {
+            id: orbitController
+            anchors.fill: parent
+            origin: originNode
+            camera: viewCamera
+            mouseEnabled: false
+            panEnabled: true
+            xSpeed: 0.2
+            ySpeed: 0.2
+            yInvert: true
+        }
+
+        // MouseArea：左键拖拽控制视角
+        MouseArea {
+            anchors.fill: parent
+            z: 1000
+            acceptedButtons: Qt.LeftButton
+            focus: false  // 不窃取键盘焦点
+            onPressed: (mouse) => {
+                if (mouse.button === Qt.LeftButton) {
+                    orbitController.mouseEnabled = true
+                    console.log("Mouse pressed: Left button")
+                }
+            }
+            onReleased: (mouse) => {
+                if (mouse.button === Qt.LeftButton) {
+                    orbitController.mouseEnabled = false
+                    inputHandler.forceActiveFocus()  // 释放后恢复键盘焦点
+                    console.log("Mouse released: Left button")
+                }
             }
         }
 
-        Rectangle {
-            id: player
-            x: playerX * 50 + 15
-            y: playerY * 50 + 15
-            width: 20; height: 20
-            color: "blue"
-            radius: 10
-            focus: true
-
-            Keys.onPressed: (event) => {
-                var newX = playerX
-                var newY = playerY
-                if (event.key === Qt.Key_W || event.key === Qt.Key_Up)    { if (playerY > 0) newY--; }
-                if (event.key === Qt.Key_S || event.key === Qt.Key_Down)  { if (playerY < 9) newY++; }
-                if (event.key === Qt.Key_A || event.key === Qt.Key_Left)  { if (playerX > 0) newX--; }
-                if (event.key === Qt.Key_D || event.key === Qt.Key_Right) { if (playerX < 9) newX++; }
-                if (newX !== playerX || newY !== playerY) {
-                    console.log("Sending move: x =", newX, "y =", newY)
-                    gameClient.sendMove(newX, newY) // 只发送请求，不直接修改
+        // 球体
+        Node {
+            id: ballNode
+            position: Qt.vector3d(0, 50, 0)
+            Model {
+                id: ballModel
+                source: "#Sphere"
+                scale: Qt.vector3d(0.8, 0.8, 0.8)
+                materials: DefaultMaterial {
+                    diffuseColor: "yellow"
                 }
-                event.accepted = true
+            }
+            PointLight {
+                position: Qt.vector3d(0, 50, 0)
+                color: "red"
+                brightness: 10
+                castsShadow: false
             }
         }
 
-        // 新增：其他玩家显示
-        Repeater {
-            model: otherPlayers
-            Rectangle {
-                x: modelData.x * 50 + 15
-                y: modelData.y * 50 + 15
-                width: 20; height: 20
-                color: "red" // 可以根据索引动态颜色，例如 color: Qt.rgba(Math.random(), Math.random(), Math.random(), 1)
-                radius: 10
-            }
-        }
+        // 地面
+        Node {
+            Model {
+                source: "#Rectangle"
 
-        Text {
-            anchors.top: parent.top
-            anchors.right: parent.right
-            anchors.margins: 20
-            text: "Score: " + score
-            color: "red"
-            font.pixelSize: 30
-            z: 10
-            onTextChanged: console.log("Score Text changed to:", text)
-        }
-
-        // 新增：分数排行榜（显示所有玩家分数）
-        Rectangle {
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.margins: 20
-            width: 150
-            height: 100 + otherPlayers.length * 20 // 动态高度
-            color: "white"
-            opacity: 0.8
-            z: 10
-
-            Column {
-                anchors.fill: parent
-                spacing: 5
-                Text {
-                    text: "Leaderboard"
-                    font.pixelSize: 20
-                    color: "black"
-                }
-                Text {
-                    text: "You: " + score
-                    font.pixelSize: 16
-                    color: "black"
-                }
-                Repeater {
-                    model: otherPlayers
-                    Text {
-                        text: "Player " + (index + 1) + ": " + modelData.score
-                        font.pixelSize: 16
-                        color: "black"
-                    }
+                scale: Qt.vector3d(20, 20, 1)
+                eulerRotation.x: -90
+                materials: DefaultMaterial {
+                    diffuseColor: "#808080"
                 }
             }
         }
     }
 
-    // 移除本地 checkCollisions 和 bean 生成，依赖服务器
 }
