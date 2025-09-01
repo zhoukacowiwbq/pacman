@@ -58,7 +58,8 @@ public:
         m_socket = new QTcpSocket(this);
         connect(m_socket, &QTcpSocket::connected, this, &GameClient::onConnected);
         connect(m_socket, &QTcpSocket::readyRead, this, &GameClient::onReadyRead);
-        m_socket->connectToHost("127.0.0.1", 81);
+        //m_socket->connectToHost("127.0.0.1", 29999);
+        m_socket->connectToHost("139.224.69.87", 29999);
 
         QTimer* timer = new QTimer(this);
         connect(timer, &QTimer::timeout, this, &GameClient::requestState);
